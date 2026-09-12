@@ -1,9 +1,8 @@
-from sentinelguard.normalizer import UnicodeNormalizer
+from sentinelguard.normalizer import normalize_text
 from sentinelguard.drift_detector import MessageEmbedder, ConversationBuffer, IntentDriftDetector
 from sentinelguard.risk_scorer import RiskScorer
 
 # --- Boot up all modules ---
-normalizer = UnicodeNormalizer()
 embedder = MessageEmbedder()
 buffer = ConversationBuffer()
 detector = IntentDriftDetector(embedder, buffer)
@@ -18,10 +17,11 @@ def analyse_message(session_id: str, raw_message: str):
     4. Decide (allow / flag / block)
     """
     # Stage 1 — Normalize
-    clean = normalizer.normalize(raw_message)
-    audit = normalizer.get_audit_log()
-    if audit:
-        print(f"  [Normalizer] Stripped: {audit}")
+    from sentinelguard.normalizer import normalize
+    result = normalize(raw_message)
+    clean = result.cleaned
+    if result.flagged:
+        print(f"  [Normalizer] Flagged: invisible={result.invisible_chars_removed} homoglyphs={result.homoglyphs_replaced}")
 
     # Stage 2 — Drift detection
     drift_result = detector.analyse(session_id, clean)
