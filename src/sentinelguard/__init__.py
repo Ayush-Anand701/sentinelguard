@@ -5,5 +5,4 @@ from sentinelguard.normalizer import (
     normalize,
     normalize_text,
 )
-
 __all__ = ["NormalizationResult", "normalize", "normalize_text"]

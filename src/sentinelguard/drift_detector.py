@@ -1,6 +1,7 @@
 """Conversation-level intent-drift detection for SentinelGuard."""
 
 from collections import deque
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -9,10 +10,27 @@ from sentence_transformers import SentenceTransformer
 from sentinelguard.normalizer import normalize
 
 
+@dataclass(frozen=True)
+class DriftDetectorConfig:
+    """Tunable detector settings, with the established defaults preserved."""
+
+    low_threshold: float = 0.35
+    high_threshold: float = 0.65
+    min_turns_for_action: int = 2
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.low_threshold < self.high_threshold <= 1.0:
+            raise ValueError("thresholds must satisfy 0 <= low < high <= 1")
+        if self.min_turns_for_action < 2:
+            raise ValueError("min_turns_for_action must be at least 2")
+
+
 class ConversationBuffer:
     """Stores the last N cleaned message embeddings for each session."""
 
     def __init__(self, window_size: int = 10):
+        if window_size < 1:
+            raise ValueError("window_size must be at least 1")
         self.window_size = window_size
         self._sessions: dict[str, deque] = {}
 
@@ -34,10 +52,15 @@ class ConversationBuffer:
 class MessageEmbedder:
     """Converts a message into a semantic embedding."""
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(
+        self, model_name: str = "all-MiniLM-L6-v2", *, local_files_only: bool = False
+    ):
         print(f"Loading embedding model: {model_name}")
-        print("(First run downloads ~80MB; this happens only once.)")
-        self.model = SentenceTransformer(model_name)
+        if local_files_only:
+            print("(Offline mode: loading only files already cached locally.)")
+        else:
+            print("(First run downloads ~80MB; this happens only once.)")
+        self.model = SentenceTransformer(model_name, local_files_only=local_files_only)
         print("Model loaded.")
 
     def embed(self, text: str) -> np.ndarray:
@@ -47,9 +70,15 @@ class MessageEmbedder:
 class IntentDriftDetector:
     """Detects when a conversation trajectory approaches attack anchors."""
 
-    def __init__(self, embedder: MessageEmbedder, buffer: ConversationBuffer):
+    def __init__(
+        self,
+        embedder: MessageEmbedder,
+        buffer: ConversationBuffer,
+        config: Optional[DriftDetectorConfig] = None,
+    ):
         self.embedder = embedder
         self.buffer = buffer
+        self.config = config or DriftDetectorConfig()
         self._attack_anchors = self._build_attack_anchors()
 
     def _build_attack_anchors(self) -> dict[str, np.ndarray]:
@@ -99,6 +128,16 @@ class IntentDriftDetector:
         recent_average = np.mean(embeddings[midpoint:], axis=0)
         return recent_average - early_average
 
+    def _action_for_score(self, drift_score: float, turn_count: int) -> str:
+        """Apply configurable thresholds without changing the default policy."""
+        if turn_count < self.config.min_turns_for_action:
+            return "allow"
+        if drift_score < self.config.low_threshold:
+            return "allow"
+        if drift_score < self.config.high_threshold:
+            return "flag"
+        return "block"
+
     def analyse(self, session_id: str, message: str) -> dict:
         """Analyse one message and return drift plus normalization metadata."""
         normalization = normalize(message)
@@ -129,12 +168,7 @@ class IntentDriftDetector:
         max_similarity = similarities[closest_attack]
         drift_score = round(max_similarity, 4)
 
-        if drift_score < 0.35:
-            action = "allow"
-        elif drift_score < 0.65:
-            action = "flag"
-        else:
-            action = "block"
+        action = self._action_for_score(drift_score, turn_count)
 
         return {
             "drift_score": drift_score,
