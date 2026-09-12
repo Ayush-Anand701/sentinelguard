@@ -1,6 +1,7 @@
 from sentinelguard.drift_detector import MessageEmbedder, ConversationBuffer, IntentDriftDetector
 
-embedder = MessageEmbedder()
+# Presentation mode avoids network checks after the model has been cached.
+embedder = MessageEmbedder(local_files_only=True)
 buffer = ConversationBuffer()
 detector = IntentDriftDetector(embedder, buffer)
 
@@ -15,4 +16,9 @@ print()
 print("--- Simulating Crescendo Attack ---")
 for i, msg in enumerate(messages):
     result = detector.analyse("session_001", msg)
-    print(f"Turn {i+1}: score={result['drift_score']}  action={result['action']}  closest={result['closest_attack']}")
+    normalization = result["normalization"]
+    print(
+        f"Turn {i + 1}: score={result['drift_score']} "
+        f"action={result['action']} closest={result['closest_attack']} "
+        f"unicode_flagged={normalization['flagged']}"
+    )
