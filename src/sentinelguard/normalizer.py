@@ -1,119 +1,139 @@
+"""Unicode normalization used before SentinelGuard embeds a user message."""
+
+from __future__ import annotations
+
 import unicodedata
-import re
-import time
+from dataclasses import dataclass, field
 
-# These are Unicode characters that are invisible to the human eye
-# but can be used to hide instructions from security filters.
-# We strip all of them before anything else sees the text.
-INVISIBLE_CHARACTERS = [
-    '\u200b',  # zero-width space
-    '\u200c',  # zero-width non-joiner
-    '\u200d',  # zero-width joiner
-    '\u200e',  # left-to-right mark
-    '\u200f',  # right-to-left mark
-    '\ufeff',  # byte order mark
-    '\u00ad',  # soft hyphen
-    '\u2060',  # word joiner
-    '\u180e',  # mongolian vowel separator
-]
+# Explicitly listed format characters cover the common zero-width and bidi
+# obfuscation techniques. The generic control-character pass below catches
+# any remaining Unicode control or formatting characters.
+_INVISIBLE_CHARS = frozenset(
+    {
+        "\u00ad",  # soft hyphen
+        "\u180e",  # Mongolian vowel separator
+        "\u200b",  # zero-width space
+        "\u200c",  # zero-width non-joiner
+        "\u200d",  # zero-width joiner
+        "\u200e",  # left-to-right mark
+        "\u200f",  # right-to-left mark
+        "\u202a",  # left-to-right embedding
+        "\u202b",  # right-to-left embedding
+        "\u202c",  # pop directional formatting
+        "\u202d",  # left-to-right override
+        "\u202e",  # right-to-left override
+        "\u2060",  # word joiner
+        "\ufeff",  # byte-order mark / zero-width no-break space
+    }
+)
+
+# Common cross-script confusables that can disguise English security-sensitive
+# words. This is deliberately small and auditable; mapping is intentionally
+# lossy for these characters, so callers handling multilingual user content
+# should retain the original message for display or audit purposes.
+_HOMOGLYPH_MAP = {
+    # Cyrillic
+    "\u0430": "a", "\u0410": "A",
+    "\u0435": "e", "\u0415": "E",
+    "\u043e": "o", "\u041e": "O",
+    "\u0440": "p", "\u0420": "P",
+    "\u0441": "c", "\u0421": "C",
+    "\u0443": "y", "\u0423": "Y",
+    "\u0445": "x", "\u0425": "X",
+    "\u0456": "i", "\u0406": "I",
+    "\u0455": "s", "\u04bb": "h", "\u0458": "j",
+    "\u0501": "d",
+    # Greek
+    "\u03b1": "a", "\u0391": "A",
+    "\u03b2": "b",
+    "\u03bf": "o", "\u039f": "O",
+    "\u03c1": "p", "\u03a1": "P",
+    "\u03c5": "u", "\u03bd": "v",
+}
+
+_ALLOWED_CONTROL_CHARS = frozenset({"\n", "\r", "\t"})
 
 
-class UnicodeNormalizer:
-    """
-    First line of defense in SentinelGuard.
-    Cleans every message before it reaches the drift detector.
-    Closes the LlamaFirewall Unicode bypass confirmed May 2025.
-    """
+@dataclass(frozen=True)
+class NormalizationResult:
+    """Cleaned text and security-relevant metadata for one message."""
 
-    def __init__(self):
-        # This list records everything we stripped, for auditing
-        self._audit_log = []
+    original: str
+    cleaned: str
+    invisible_chars_removed: int = 0
+    control_chars_removed: int = 0
+    homoglyphs_replaced: int = 0
+    unicode_normalized: bool = False
+    flagged: bool = field(init=False)
 
-    def normalize(self, text: str) -> str:
-        """
-        Takes a raw user message, cleans it, returns safe text.
-        """
-        original = text
-        self._audit_log = []  # reset log for each new message
+    def __post_init__(self) -> None:
+        # NFKC-only transformations (for example, full-width ASCII) are also
+        # meaningful obfuscation signals, so compare the final content.
+        object.__setattr__(self, "flagged", self.cleaned != self.original)
 
-        # Step 1 — Strip invisible characters
-        for char in INVISIBLE_CHARACTERS:
-            if char in text:
-                count = text.count(char)
-                text = text.replace(char, '')
-                self._audit_log.append({
-                    "action": "stripped_invisible",
-                    "char_code": hex(ord(char)),
-                    "count": count
-                })
-
-        # Step 2 — NFKC normalization
-        # Standardises within same script (e.g. fullwidth → normal)
-        text = unicodedata.normalize('NFKC', text)
-
-        # Step 2b — Homoglyph mapping
-        # NFKC does NOT map across scripts (Cyrillic → Latin etc.)
-        # We do this manually for the most common attack characters
-        HOMOGLYPHS = {
-            '\u0430': 'a',  # Cyrillic а → Latin a
-            '\u0435': 'e',  # Cyrillic е → Latin e
-            '\u0456': 'i',  # Cyrillic і → Latin i
-            '\u043e': 'o',  # Cyrillic о → Latin o
-            '\u0440': 'r',  # Cyrillic р → Latin r
-            '\u0441': 'c',  # Cyrillic с → Latin c
-            '\u0445': 'x',  # Cyrillic х → Latin x
-            '\u0443': 'y',  # Cyrillic у → Latin y
-            '\u0042': 'B',  # keep latin B (already correct)
-            '\u0392': 'B',  # Greek Β → Latin B
-            '\u0391': 'A',  # Greek Α → Latin A
-            '\u0395': 'E',  # Greek Ε → Latin E
-            '\u0396': 'Z',  # Greek Ζ → Latin Z
-            '\u0397': 'H',  # Greek Η → Latin H
-            '\u0399': 'I',  # Greek Ι → Latin I
-            '\u039a': 'K',  # Greek Κ → Latin K
-            '\u039c': 'M',  # Greek Μ → Latin M
-            '\u039d': 'N',  # Greek Ν → Latin N
-            '\u039f': 'O',  # Greek Ο → Latin O
-            '\u03a1': 'R',  # Greek Ρ → Latin R
-            '\u03a4': 'T',  # Greek Τ → Latin T
-            '\u03a5': 'Y',  # Greek Υ → Latin Y
-            '\u03a7': 'X',  # Greek Χ → Latin X
+    def as_dict(self) -> dict[str, int | bool]:
+        """Return JSON-safe metadata suitable for detector/API responses."""
+        return {
+            "flagged": self.flagged,
+            "unicode_normalized": self.unicode_normalized,
+            "invisible_chars_removed": self.invisible_chars_removed,
+            "control_chars_removed": self.control_chars_removed,
+            "homoglyphs_replaced": self.homoglyphs_replaced,
         }
-        for foreign_char, latin_equiv in HOMOGLYPHS.items():
-            if foreign_char in text:
-                text = text.replace(foreign_char, latin_equiv)
-                self._audit_log.append({
-                    "action": "homoglyph_mapped",
-                    "from": hex(ord(foreign_char)),
-                    "to": latin_equiv
-                })
 
-        # Step 3 — Strip any remaining non-printable control characters
-        # (except normal ones like newline \n and tab \t)
-        cleaned = []
-        for char in text:
-            if unicodedata.category(char).startswith('C') and char not in '\n\t\r':
-                self._audit_log.append({
-                    "action": "stripped_control",
-                    "char_code": hex(ord(char))
-                })
-            else:
-                cleaned.append(char)
-        text = ''.join(cleaned)
 
-        # Log if anything changed
-        if text != original:
-            self._audit_log.append({
-                "action": "summary",
-                "original_length": len(original),
-                "cleaned_length": len(text)
-            })
+def _strip_controls(text: str) -> tuple[str, int, int]:
+    """Remove invisible and other non-printable controls, preserving layout."""
+    invisible_removed = 0
+    control_removed = 0
+    cleaned_chars: list[str] = []
 
-        return text
+    for char in text:
+        if char in _INVISIBLE_CHARS:
+            invisible_removed += 1
+        elif (
+            unicodedata.category(char).startswith("C")
+            and char not in _ALLOWED_CONTROL_CHARS
+        ):
+            control_removed += 1
+        else:
+            cleaned_chars.append(char)
 
-    def get_audit_log(self) -> list:
-        """
-        Returns a list of everything that was stripped in the last normalize() call.
-        Useful for debugging and for the paper's evaluation section.
-        """
-        return self._audit_log
+    return "".join(cleaned_chars), invisible_removed, control_removed
+
+
+def _replace_homoglyphs(text: str) -> tuple[str, int]:
+    replacements = 0
+    cleaned_chars: list[str] = []
+    for char in text:
+        replacement = _HOMOGLYPH_MAP.get(char)
+        if replacement is None:
+            cleaned_chars.append(char)
+        else:
+            cleaned_chars.append(replacement)
+            replacements += 1
+    return "".join(cleaned_chars), replacements
+
+
+def normalize(text: str) -> NormalizationResult:
+    """Normalize and clean text before it reaches downstream classifiers."""
+    if not isinstance(text, str):
+        raise TypeError(f"normalize() expects str, got {type(text).__name__}")
+
+    nfkc_text = unicodedata.normalize("NFKC", text)
+    stripped, invisible_count, control_count = _strip_controls(nfkc_text)
+    cleaned, homoglyph_count = _replace_homoglyphs(stripped)
+
+    return NormalizationResult(
+        original=text,
+        cleaned=cleaned,
+        invisible_chars_removed=invisible_count,
+        control_chars_removed=control_count,
+        homoglyphs_replaced=homoglyph_count,
+        unicode_normalized=nfkc_text != text,
+    )
+
+
+def normalize_text(text: str) -> str:
+    """Convenience wrapper for consumers that only need cleaned text."""
+    return normalize(text).cleaned
