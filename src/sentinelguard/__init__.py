@@ -11,7 +11,7 @@ Usage:
 """
 
 from dataclasses import dataclass
-from sentinelguard.normalizer import normalize
+from sentinelguard.normalizer import normalize, normalize_text, NormalizationResult
 from sentinelguard.drift_detector import (
     MessageEmbedder,
     ConversationBuffer,
