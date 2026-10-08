@@ -63,8 +63,8 @@ class SentinelGuard:
         window_size: int = 10,
         alpha: float = 0.6,
         beta: float = 0.4,
-        flag_threshold: float = 0.35,
-        block_threshold: float = 0.65,
+        flag_threshold: float = 0.22,
+        block_threshold: float = 0.30,
         embedding_model: str = "all-MiniLM-L6-v2",
     ):
         print("Initialising SentinelGuard...")
