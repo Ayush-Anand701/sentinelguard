@@ -1,0 +1,23 @@
+{
+  "sentinelguard": {
+    "precision": 1.0,
+    "recall": 0.3478,
+    "f1": 0.5161,
+    "fpr": 0.0,
+    "tp": 8,
+    "fp": 0,
+    "tn": 10,
+    "fn": 15
+  },
+  "blocklist_baseline": {
+    "precision": 1.0,
+    "recall": 0.3478,
+    "f1": 0.5161,
+    "fpr": 0.0,
+    "tp": 8,
+    "fp": 0,
+    "tn": 10,
+    "fn": 15
+  },
+  "avg_latency_ms": 60.65
+}
